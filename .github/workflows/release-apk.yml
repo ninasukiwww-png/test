@@ -1,20 +1,32 @@
-name: 构建APK
+name: Build Debug APK
 
-# 关键：必须有触发条件
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:   # 允许手动触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: 拉取代码
+      - name: Checkout code
         uses: actions/checkout@v4
-      
-      - name: 上传APK
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: my-apk
+          name: app-debug
           path: app/build/outputs/apk/debug/*.apk
