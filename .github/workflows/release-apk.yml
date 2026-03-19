@@ -29,7 +29,7 @@ jobs:
           echo "📦 正在解压 ${{ github.event.inputs.zip_filename }} ..."
           tar -xzf "${{ github.event.inputs.zip_filename }}"
           rm "${{ github.event.inputs.zip_filename }}"
-          echo "✅ 解压完成，当前目录："
+          echo "✅ 解压完成"
           ls -la
 
       - name: Set up JDK 17
@@ -70,8 +70,7 @@ jobs:
             curl -f -L -o gradle/wrapper/gradle-wrapper.jar "$JAR_URL" || echo "下载失败，将使用独立 Gradle"
           fi
 
-      # 关键修复：创建 init.gradle 来强制覆盖所有项目的仓库
-      - name: Create init script to force correct repositories
+      - name: Create init script
         run: |
           cd "$GRADLEW_DIR"
           cat > init.gradle << 'EOF'
@@ -83,7 +82,6 @@ allprojects {
     }
 }
 EOF
-          echo "✅ init.gradle 已创建"
 
       - name: Build with gradlew (if available)
         run: |
