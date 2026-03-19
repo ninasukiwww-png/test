@@ -1,34 +1,20 @@
-name: Build Debug APK
+name: 构建APK
 
-# 触发条件：当向main分支推送代码时自动运行 [citation:1]
+# 关键：必须有触发条件
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 1. 拉取你的代码到虚拟机 [citation:1][citation:4][citation:7]
-      - name: Checkout code
+      - name: 拉取代码
         uses: actions/checkout@v4
-
-      # 2. 设置Java开发环境 (Android构建必需) [citation:1][citation:4][citation:7]
-      - name: Set up JDK
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17' # 可根据项目需要选择11或17 [citation:4][citation:8]
-          distribution: 'temurin'
-
-      # 3. 赋予gradlew执行权限并构建Debug APK [citation:1][citation:7]
-      - name: Build with Gradle
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug
-
-      # 4. 将生成的APK上传到GitHub，方便下载 [citation:1][citation:4][citation:9]
-      - name: Upload APK
+      
+      - name: 上传APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
+          name: my-apk
           path: app/build/outputs/apk/debug/*.apk
