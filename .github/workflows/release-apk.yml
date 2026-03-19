@@ -1,100 +1,34 @@
-name: Build & Release from Zip (Final)
+name: Build Debug APK
 
+# 触发条件：当向main分支推送代码时自动运行 [citation:1]
 on:
-  workflow_dispatch:
-    inputs:
-      version_tag:
-        description: '版本号 (例如 v1.0.0)'
-        required: true
-        default: 'v1.0.0'
-      release_name:
-        description: '发布名称'
-        required: true
-        default: 'Auto Build'
-      zip_filename:
-        description: '压缩包文件名'
-        required: true
-        default: 'AudioCaptureApp_Final_For_Friend.tar.gz'
+  push:
+    branches: [ "main" ]
 
 jobs:
-  build-and-release:
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
+      # 1. 拉取你的代码到虚拟机 [citation:1][citation:4][citation:7]
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Unpack
-        run: |
-          tar -xzf "${{ github.event.inputs.zip_filename }}"
-          rm "${{ github.event.inputs.zip_filename }}"
-
-      - name: JDK 17
+      # 2. 设置Java开发环境 (Android构建必需) [citation:1][citation:4][citation:7]
+      - name: Set up JDK
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '17' # 可根据项目需要选择11或17 [citation:4][citation:8]
           distribution: 'temurin'
 
-      - name: Locate gradlew
-        id: locate
-        run: |
-          GRADLEW_PATH=$(find . -name "gradlew" -type f | head -1)
-          cd "$(dirname "$GRADLEW_PATH")"
-          echo "GRADLEW_DIR=$(pwd)" >> $GITHUB_ENV
-
-      - name: Get Gradle version
-        id: version
-        run: |
-          cd "$GRADLEW_DIR"
-          if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
-            GRADLE_VERSION=$(grep "^distributionUrl" gradle/wrapper/gradle-wrapper.properties | grep -oP 'gradle-\K[0-9.]+(?=-bin\.zip|-all\.zip)')
-          fi
-          echo "GRADLE_VERSION=${GRADLE_VERSION:-8.5}" >> $GITHUB_OUTPUT
-
-      - name: Fix gradle-wrapper.jar
-        run: |
-          cd "$GRADLEW_DIR"
-          mkdir -p gradle/wrapper
-          if [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
-            curl -f -L -o gradle/wrapper/gradle-wrapper.jar \
-              "https://repo1.maven.org/maven2/org/gradle/gradle-wrapper/${{ steps.version.outputs.GRADLE_VERSION }}/gradle-wrapper-${{ steps.version.outputs.GRADLE_VERSION }}.jar" || true
-          fi
-
-      # 核心修复：init.gradle 强制允许项目仓库 + 添加必要仓库
-      - name: Create init.gradle
-        run: |
-          cd "$GRADLEW_DIR"
-          cat > init.gradle << 'EOF'
-settingsEvaluated { settings ->
-    settings.dependencyResolutionManagement.repositoriesMode = RepositoriesMode.PREFER_PROJECT
-}
-allprojects {
-    repositories {
-        clear()
-        google()
-        mavenCentral()
-    }
-}
-EOF
-
+      # 3. 赋予gradlew执行权限并构建Debug APK [citation:1][citation:7]
       - name: Build with Gradle
         run: |
-          cd "$GRADLEW_DIR"
           chmod +x gradlew
-          if [ -s gradle/wrapper/gradle-wrapper.jar ]; then
-            ./gradlew -I init.gradle assembleDebug
-          else
-            wget -q "https://services.gradle.org/distributions/gradle-${{ steps.version.outputs.GRADLE_VERSION }}-bin.zip"
-            unzip -q gradle-${{ steps.version.outputs.GRADLE_VERSION }}-bin.zip
-            ./gradle-${{ steps.version.outputs.GRADLE_VERSION }}/bin/gradle -I init.gradle assembleDebug
-          fi
+          ./gradlew assembleDebug
 
+      # 4. 将生成的APK上传到GitHub，方便下载 [citation:1][citation:4][citation:9]
       - name: Upload APK
-        uses: softprops/action-gh-release@v2
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.event.inputs.version_tag }}
-          name: ${{ github.event.inputs.release_name }}
-          files: ${{ env.GRADLEW_DIR }}/app/build/outputs/apk/debug/*.apk
-          prerelease: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: app-debug
+          path: app/build/outputs/apk/debug/*.apk
