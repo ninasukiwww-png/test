@@ -21,18 +21,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Unpack Source Code
+      - name: Unpack
         run: |
-          echo "📦 正在解压 ${{ github.event.inputs.zip_filename }} ..."
           tar -xzf "${{ github.event.inputs.zip_filename }}"
           rm "${{ github.event.inputs.zip_filename }}"
-          echo "✅ 解压完成"
-          ls -la
 
-      - name: Set up JDK 17
+      - name: JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
@@ -42,38 +39,35 @@ jobs:
         id: locate
         run: |
           GRADLEW_PATH=$(find . -name "gradlew" -type f | head -1)
-          if [ -z "$GRADLEW_PATH" ]; then
-            echo "❌ 未找到 gradlew 文件！"
-            exit 1
-          fi
           cd "$(dirname "$GRADLEW_PATH")"
           echo "GRADLEW_DIR=$(pwd)" >> $GITHUB_ENV
 
-      - name: Extract Gradle version
+      - name: Get Gradle version
         id: version
         run: |
           cd "$GRADLEW_DIR"
           if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
-            DIST_URL=$(grep "^distributionUrl" gradle/wrapper/gradle-wrapper.properties | cut -d= -f2- | tr -d ' ')
-            GRADLE_VERSION=$(echo "$DIST_URL" | grep -oP 'gradle-\K[0-9.]+(?=-bin\.zip|-all\.zip)' || echo "8.5")
-          else
-            GRADLE_VERSION="8.5"
+            GRADLE_VERSION=$(grep "^distributionUrl" gradle/wrapper/gradle-wrapper.properties | grep -oP 'gradle-\K[0-9.]+(?=-bin\.zip|-all\.zip)')
           fi
-          echo "GRADLE_VERSION=$GRADLE_VERSION" >> $GITHUB_OUTPUT
+          echo "GRADLE_VERSION=${GRADLE_VERSION:-8.5}" >> $GITHUB_OUTPUT
 
-      - name: Restore gradle-wrapper.jar if missing
+      - name: Fix gradle-wrapper.jar
         run: |
           cd "$GRADLEW_DIR"
           mkdir -p gradle/wrapper
-          if [ ! -f gradle/wrapper/gradle-wrapper.jar ] || [ $(stat -c%s gradle/wrapper/gradle-wrapper.jar 2>/dev/null || echo 0) -lt 10240 ]; then
-            JAR_URL="https://repo1.maven.org/maven2/org/gradle/gradle-wrapper/${{ steps.version.outputs.GRADLE_VERSION }}/gradle-wrapper-${{ steps.version.outputs.GRADLE_VERSION }}.jar"
-            curl -f -L -o gradle/wrapper/gradle-wrapper.jar "$JAR_URL" || echo "下载失败，将使用独立 Gradle"
+          if [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
+            curl -f -L -o gradle/wrapper/gradle-wrapper.jar \
+              "https://repo1.maven.org/maven2/org/gradle/gradle-wrapper/${{ steps.version.outputs.GRADLE_VERSION }}/gradle-wrapper-${{ steps.version.outputs.GRADLE_VERSION }}.jar" || true
           fi
 
-      - name: Create init script
+      # 核心修复：init.gradle 强制允许项目仓库 + 添加必要仓库
+      - name: Create init.gradle
         run: |
           cd "$GRADLEW_DIR"
           cat > init.gradle << 'EOF'
+settingsEvaluated { settings ->
+    settings.dependencyResolutionManagement.repositoriesMode = RepositoriesMode.PREFER_PROJECT
+}
 allprojects {
     repositories {
         clear()
@@ -83,14 +77,13 @@ allprojects {
 }
 EOF
 
-      - name: Build with gradlew (if available)
+      - name: Build with Gradle
         run: |
           cd "$GRADLEW_DIR"
           chmod +x gradlew
-          if [ -f gradle/wrapper/gradle-wrapper.jar ] && [ $(stat -c%s gradle/wrapper/gradle-wrapper.jar) -ge 10240 ]; then
+          if [ -s gradle/wrapper/gradle-wrapper.jar ]; then
             ./gradlew -I init.gradle assembleDebug
           else
-            echo "gradlew 不可用，下载独立 Gradle ${{ steps.version.outputs.GRADLE_VERSION }}"
             wget -q "https://services.gradle.org/distributions/gradle-${{ steps.version.outputs.GRADLE_VERSION }}-bin.zip"
             unzip -q gradle-${{ steps.version.outputs.GRADLE_VERSION }}-bin.zip
             ./gradle-${{ steps.version.outputs.GRADLE_VERSION }}/bin/gradle -I init.gradle assembleDebug
