@@ -70,14 +70,20 @@ jobs:
             curl -f -L -o gradle/wrapper/gradle-wrapper.jar "$JAR_URL" || echo "下载失败，将使用独立 Gradle"
           fi
 
-      - name: Create init script
+      # 关键修复：创建 init.gradle 来强制覆盖所有项目的仓库
+      - name: Create init script to force correct repositories
         run: |
           cd "$GRADLEW_DIR"
           cat > init.gradle << 'EOF'
-          beforeSettings { settings ->
-              settings.dependencyResolutionManagement.repositoriesMode = RepositoriesMode.PREFER_PROJECT
-          }
-          EOF
+allprojects {
+    repositories {
+        clear()
+        google()
+        mavenCentral()
+    }
+}
+EOF
+          echo "✅ init.gradle 已创建"
 
       - name: Build with gradlew (if available)
         run: |
