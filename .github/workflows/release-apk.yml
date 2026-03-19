@@ -40,7 +40,6 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # 步骤1：定位 gradlew 并赋予执行权限
       - name: Locate and chmod gradlew
         run: |
           set -x
@@ -56,13 +55,15 @@ jobs:
           ls -l gradlew
           echo "GRADLEW_DIR=$(pwd)" >> $GITHUB_ENV
 
-      # 步骤2：修复 gradle-wrapper.jar（如果缺失或为占位文件）
       - name: Fix gradle-wrapper.jar
         id: fix-wrapper
         run: |
           cd "$GRADLEW_DIR"
           echo "检查 gradle/wrapper 目录："
           ls -la gradle/wrapper/ || true
+
+          # 初始化 fallback 为 false
+          FALLBACK=false
 
           # 判断是否需要下载（文件不存在或小于 10KB）
           NEED_DOWNLOAD=false
@@ -86,45 +87,47 @@ jobs:
             PROPERTIES_FILE="gradle/wrapper/gradle-wrapper.properties"
             if [ ! -f "$PROPERTIES_FILE" ]; then
               echo "❌ 未找到 gradle-wrapper.properties，无法确定 Gradle 版本"
-              exit 1
-            fi
-
-            # 提取 distributionUrl 中的版本号 (例如 gradle-8.0.2-bin.zip)
-            DIST_URL=$(grep "^distributionUrl" "$PROPERTIES_FILE" | cut -d= -f2- | tr -d ' ')
-            echo "distributionUrl: $DIST_URL"
-
-            # 尝试提取版本号 (格式：gradle-<version>-bin.zip 或 gradle-<version>-all.zip)
-            GRADLE_VERSION=$(echo "$DIST_URL" | grep -oP 'gradle-\K[0-9.]+(?=-bin\.zip|-all\.zip)')
-            if [ -z "$GRADLE_VERSION" ]; then
-              echo "❌ 无法从 distributionUrl 提取版本号，使用默认版本 8.0.2"
-              GRADLE_VERSION="8.0.2"
-            fi
-            echo "检测到 Gradle 版本: $GRADLE_VERSION"
-
-            # 从 Maven Central 下载对应版本的 gradle-wrapper.jar
-            JAR_URL="https://repo1.maven.org/maven2/org/gradle/gradle-wrapper/${GRADLE_VERSION}/gradle-wrapper-${GRADLE_VERSION}.jar"
-            echo "下载地址: $JAR_URL"
-            mkdir -p gradle/wrapper
-            if curl -f -L -o gradle/wrapper/gradle-wrapper.jar "$JAR_URL"; then
-              echo "✅ gradle-wrapper.jar 下载成功"
+              FALLBACK=true
             else
-              echo "⚠️ Maven Central 下载失败，尝试从 Gradle GitHub 下载..."
-              # 备选：从 Gradle 源码仓库下载 (可能需要 raw 地址)
-              GITHUB_URL="https://raw.githubusercontent.com/gradle/gradle/v${GRADLE_VERSION}/gradle/wrapper/gradle-wrapper.jar"
-              if curl -f -L -o gradle/wrapper/gradle-wrapper.jar "$GITHUB_URL"; then
-                echo "✅ 从 GitHub 下载成功"
+              # 提取 distributionUrl 中的版本号 (例如 gradle-8.0.2-bin.zip)
+              DIST_URL=$(grep "^distributionUrl" "$PROPERTIES_FILE" | cut -d= -f2- | tr -d ' ')
+              echo "distributionUrl: $DIST_URL"
+
+              # 尝试提取版本号 (格式：gradle-<version>-bin.zip 或 gradle-<version>-all.zip)
+              GRADLE_VERSION=$(echo "$DIST_URL" | grep -oP 'gradle-\K[0-9.]+(?=-bin\.zip|-all\.zip)')
+              if [ -z "$GRADLE_VERSION" ]; then
+                echo "❌ 无法从 distributionUrl 提取版本号，使用默认版本 8.0.2"
+                GRADLE_VERSION="8.0.2"
+              fi
+              echo "检测到 Gradle 版本: $GRADLE_VERSION"
+
+              # 从 Maven Central 下载对应版本的 gradle-wrapper.jar
+              JAR_URL="https://repo1.maven.org/maven2/org/gradle/gradle-wrapper/${GRADLE_VERSION}/gradle-wrapper-${GRADLE_VERSION}.jar"
+              echo "下载地址: $JAR_URL"
+              mkdir -p gradle/wrapper
+              if curl -f -L -o gradle/wrapper/gradle-wrapper.jar "$JAR_URL"; then
+                echo "✅ gradle-wrapper.jar 下载成功"
+                # 下载成功，无需 fallback
               else
-                echo "❌ 所有下载方式均失败，将使用系统 Gradle 作为后备方案"
-                echo "fallback=true" >> $GITHUB_OUTPUT
+                echo "⚠️ Maven Central 下载失败，尝试从 Gradle GitHub 下载..."
+                # 备选：从 Gradle 源码仓库下载
+                GITHUB_URL="https://raw.githubusercontent.com/gradle/gradle/v${GRADLE_VERSION}/gradle/wrapper/gradle-wrapper.jar"
+                if curl -f -L -o gradle/wrapper/gradle-wrapper.jar "$GITHUB_URL"; then
+                  echo "✅ 从 GitHub 下载成功"
+                else
+                  echo "❌ 所有下载方式均失败，将使用系统 Gradle 作为后备方案"
+                  FALLBACK=true
+                fi
               fi
             fi
           fi
 
           # 最终检查
           ls -la gradle/wrapper/
-          echo "fallback=${fallback:-false}" >> $GITHUB_OUTPUT
 
-      # 步骤3：如果 wrapper 修复成功，使用 gradlew 构建
+          # 设置输出变量
+          echo "fallback=$FALLBACK" >> $GITHUB_OUTPUT
+
       - name: Build with gradlew
         if: steps.fix-wrapper.outputs.fallback != 'true'
         run: |
@@ -132,7 +135,6 @@ jobs:
           echo "🔨 使用 gradlew 构建 APK"
           ./gradlew assembleDebug
 
-      # 步骤4：后备方案 - 使用系统 Gradle 构建
       - name: Build with system Gradle (fallback)
         if: steps.fix-wrapper.outputs.fallback == 'true'
         run: |
@@ -142,7 +144,6 @@ jobs:
           sudo apt-get install -y gradle
           gradle assembleDebug
 
-      # 步骤5：上传 APK（无论哪种方式构建，APK 路径通常一致）
       - name: Upload APK to Release
         uses: softprops/action-gh-release@v2
         with:
