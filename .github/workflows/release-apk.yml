@@ -1,4 +1,4 @@
-name: Build & Release from Zip (Final Fix)
+name: Build & Release from Zip (Final)
 
 on:
   workflow_dispatch:
@@ -29,10 +29,8 @@ jobs:
           echo "📦 正在解压 ${{ github.event.inputs.zip_filename }} ..."
           tar -xzf "${{ github.event.inputs.zip_filename }}"
           rm "${{ github.event.inputs.zip_filename }}"
-          echo "✅ 解压完成，当前目录结构："
+          echo "✅ 解压完成，当前目录："
           ls -la
-          echo "---- 递归查看文件列表 (前20行) ----"
-          ls -R | head -20
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -40,99 +38,65 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Locate project root (where gradlew is)
+      - name: Locate gradlew
         id: locate
         run: |
-          set -x
           GRADLEW_PATH=$(find . -name "gradlew" -type f | head -1)
           if [ -z "$GRADLEW_PATH" ]; then
             echo "❌ 未找到 gradlew 文件！"
             exit 1
           fi
-          echo "✅ 找到 gradlew: $GRADLEW_PATH"
           cd "$(dirname "$GRADLEW_PATH")"
-          echo "当前目录: $(pwd)"
           echo "GRADLEW_DIR=$(pwd)" >> $GITHUB_ENV
 
-      - name: Extract Gradle version from wrapper properties
+      - name: Extract Gradle version
         id: version
         run: |
           cd "$GRADLEW_DIR"
           if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
             DIST_URL=$(grep "^distributionUrl" gradle/wrapper/gradle-wrapper.properties | cut -d= -f2- | tr -d ' ')
-            echo "distributionUrl: $DIST_URL"
-            # 提取版本号，例如从 gradle-8.2.1-bin.zip 中提取 8.2.1
-            GRADLE_VERSION=$(echo "$DIST_URL" | grep -oP 'gradle-\K[0-9.]+(?=-bin\.zip|-all\.zip)' || true)
-            if [ -z "$GRADLE_VERSION" ]; then
-              echo "❌ 无法提取版本号，使用默认版本 8.5"
-              GRADLE_VERSION="8.5"
-            fi
+            GRADLE_VERSION=$(echo "$DIST_URL" | grep -oP 'gradle-\K[0-9.]+(?=-bin\.zip|-all\.zip)' || echo "8.5")
           else
-            echo "❌ gradle-wrapper.properties 不存在，使用默认版本 8.5"
             GRADLE_VERSION="8.5"
           fi
           echo "GRADLE_VERSION=$GRADLE_VERSION" >> $GITHUB_OUTPUT
-          echo "✅ 所需 Gradle 版本: $GRADLE_VERSION"
 
-      - name: Try to restore gradle-wrapper.jar
-        id: restore
+      - name: Restore gradle-wrapper.jar if missing
         run: |
           cd "$GRADLEW_DIR"
           mkdir -p gradle/wrapper
-          # 如果 gradle-wrapper.jar 不存在或小于 10KB，则下载
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ] || [ $(stat -c%s gradle/wrapper/gradle-wrapper.jar 2>/dev/null || echo 0) -lt 10240 ]; then
-            echo "⚠️ gradle-wrapper.jar 缺失或无效，尝试下载版本 ${{ steps.version.outputs.GRADLE_VERSION }}"
             JAR_URL="https://repo1.maven.org/maven2/org/gradle/gradle-wrapper/${{ steps.version.outputs.GRADLE_VERSION }}/gradle-wrapper-${{ steps.version.outputs.GRADLE_VERSION }}.jar"
-            if curl -f -L -o gradle/wrapper/gradle-wrapper.jar "$JAR_URL"; then
-              echo "✅ gradle-wrapper.jar 下载成功"
-              echo "WRAPPER_OK=true" >> $GITHUB_OUTPUT
-            else
-              echo "❌ 下载 gradle-wrapper.jar 失败，后续将使用独立 Gradle 构建"
-              echo "WRAPPER_OK=false" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "✅ gradle-wrapper.jar 已存在且有效"
-            echo "WRAPPER_OK=true" >> $GITHUB_OUTPUT
+            curl -f -L -o gradle/wrapper/gradle-wrapper.jar "$JAR_URL" || echo "下载失败，将使用独立 Gradle"
           fi
 
-      - name: Create init script to allow project repositories
+      - name: Create init script
         run: |
           cd "$GRADLEW_DIR"
           cat > init.gradle << 'EOF'
-beforeSettings { settings ->
-    settings.dependencyResolutionManagement.repositoriesMode = RepositoriesMode.PREFER_PROJECT
-}
-EOF
-          echo "✅ init.gradle 已创建"
+          beforeSettings { settings ->
+              settings.dependencyResolutionManagement.repositoriesMode = RepositoriesMode.PREFER_PROJECT
+          }
+          EOF
 
-      - name: Build with Gradle Wrapper (if restored)
-        if: steps.restore.outputs.WRAPPER_OK == 'true'
+      - name: Build with gradlew (if available)
         run: |
           cd "$GRADLEW_DIR"
           chmod +x gradlew
-          ./gradlew -I init.gradle assembleDebug
+          if [ -f gradle/wrapper/gradle-wrapper.jar ] && [ $(stat -c%s gradle/wrapper/gradle-wrapper.jar) -ge 10240 ]; then
+            ./gradlew -I init.gradle assembleDebug
+          else
+            echo "gradlew 不可用，下载独立 Gradle ${{ steps.version.outputs.GRADLE_VERSION }}"
+            wget -q "https://services.gradle.org/distributions/gradle-${{ steps.version.outputs.GRADLE_VERSION }}-bin.zip"
+            unzip -q gradle-${{ steps.version.outputs.GRADLE_VERSION }}-bin.zip
+            ./gradle-${{ steps.version.outputs.GRADLE_VERSION }}/bin/gradle -I init.gradle assembleDebug
+          fi
 
-      - name: Download and use standalone Gradle (if wrapper failed)
-        if: steps.restore.outputs.WRAPPER_OK != 'true'
-        run: |
-          cd "$GRADLEW_DIR"
-          VERSION="${{ steps.version.outputs.GRADLE_VERSION }}"
-          echo "🔧 下载 Gradle $VERSION 发行版..."
-          wget -q "https://services.gradle.org/distributions/gradle-${VERSION}-bin.zip"
-          unzip -q gradle-${VERSION}-bin.zip
-          GRADLE_HOME="$(pwd)/gradle-${VERSION}"
-          echo "✅ Gradle $VERSION 解压完成，开始构建..."
-          $GRADLE_HOME/bin/gradle -I init.gradle assembleDebug
-
-      - name: Upload APK to Release
+      - name: Upload APK
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.version_tag }}
           name: ${{ github.event.inputs.release_name }}
-          body: |
-            📦 **自动构建版本**
-            - 源文件: ${{ github.event.inputs.zip_filename }}
-            - Gradle 版本: ${{ steps.version.outputs.GRADLE_VERSION }}
           files: ${{ env.GRADLEW_DIR }}/app/build/outputs/apk/debug/*.apk
           prerelease: true
         env:
