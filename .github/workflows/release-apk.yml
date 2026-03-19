@@ -1,4 +1,4 @@
-name: Build & Release from Zip (Fix Gradle version)
+name: Build & Release from Zip (Final Fix)
 
 on:
   workflow_dispatch:
@@ -40,7 +40,7 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Locate and chmod gradlew
+      - name: Locate project root (where gradlew is)
         id: locate
         run: |
           set -x
@@ -52,8 +52,6 @@ jobs:
           echo "✅ 找到 gradlew: $GRADLEW_PATH"
           cd "$(dirname "$GRADLEW_PATH")"
           echo "当前目录: $(pwd)"
-          chmod +x gradlew
-          ls -l gradlew
           echo "GRADLEW_DIR=$(pwd)" >> $GITHUB_ENV
 
       - name: Extract Gradle version from wrapper properties
@@ -63,10 +61,10 @@ jobs:
           if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
             DIST_URL=$(grep "^distributionUrl" gradle/wrapper/gradle-wrapper.properties | cut -d= -f2- | tr -d ' ')
             echo "distributionUrl: $DIST_URL"
-            # 提取版本号 (支持 gradle-<version>-bin.zip 或 gradle-<version>-all.zip)
+            # 提取版本号，例如从 gradle-8.2.1-bin.zip 中提取 8.2.1
             GRADLE_VERSION=$(echo "$DIST_URL" | grep -oP 'gradle-\K[0-9.]+(?=-bin\.zip|-all\.zip)' || true)
             if [ -z "$GRADLE_VERSION" ]; then
-              echo "❌ 无法从 distributionUrl 提取版本号，使用默认版本 8.5"
+              echo "❌ 无法提取版本号，使用默认版本 8.5"
               GRADLE_VERSION="8.5"
             fi
           else
@@ -76,59 +74,55 @@ jobs:
           echo "GRADLE_VERSION=$GRADLE_VERSION" >> $GITHUB_OUTPUT
           echo "✅ 所需 Gradle 版本: $GRADLE_VERSION"
 
-      - name: Fix gradle-wrapper.jar (if missing)
+      - name: Try to restore gradle-wrapper.jar
+        id: restore
         run: |
           cd "$GRADLEW_DIR"
           mkdir -p gradle/wrapper
-          # 如果 gradle-wrapper.jar 不存在或小于 10KB，视为无效并下载
-          NEED_DOWNLOAD=false
-          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
-            NEED_DOWNLOAD=true
-          else
-            JAR_SIZE=$(stat -c%s gradle/wrapper/gradle-wrapper.jar 2>/dev/null || echo 0)
-            if [ "$JAR_SIZE" -lt 10240 ]; then
-              NEED_DOWNLOAD=true
-            fi
-          fi
-
-          if [ "$NEED_DOWNLOAD" = true ]; then
+          # 如果 gradle-wrapper.jar 不存在或小于 10KB，则下载
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ] || [ $(stat -c%s gradle/wrapper/gradle-wrapper.jar 2>/dev/null || echo 0) -lt 10240 ]; then
             echo "⚠️ gradle-wrapper.jar 缺失或无效，尝试下载版本 ${{ steps.version.outputs.GRADLE_VERSION }}"
-            # 从 Maven Central 下载对应版本的 gradle-wrapper.jar
             JAR_URL="https://repo1.maven.org/maven2/org/gradle/gradle-wrapper/${{ steps.version.outputs.GRADLE_VERSION }}/gradle-wrapper-${{ steps.version.outputs.GRADLE_VERSION }}.jar"
             if curl -f -L -o gradle/wrapper/gradle-wrapper.jar "$JAR_URL"; then
               echo "✅ gradle-wrapper.jar 下载成功"
+              echo "WRAPPER_OK=true" >> $GITHUB_OUTPUT
             else
-              echo "❌ Maven Central 下载失败，尝试从 Gradle 官方下载..."
-              # 备选：从 Gradle 发行版中提取（需要下载整个 zip，这里直接使用已知结构）
-              # 更简单：使用 SDKMAN 安装对应版本 Gradle 并复制其 wrapper jar
-              # 但为了简化，我们设置一个标志，后面直接使用 SDKMAN 安装 Gradle 构建
-              echo "DOWNLOAD_FAILED=true" >> $GITHUB_ENV
+              echo "❌ 下载 gradle-wrapper.jar 失败，后续将使用独立 Gradle 构建"
+              echo "WRAPPER_OK=false" >> $GITHUB_OUTPUT
             fi
+          else
+            echo "✅ gradle-wrapper.jar 已存在且有效"
+            echo "WRAPPER_OK=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Setup Gradle via SDKMAN (if wrapper fix failed)
-        if: env.DOWNLOAD_FAILED == 'true'
-        run: |
-          # 安装 SDKMAN
-          curl -s "https://get.sdkman.io" | bash
-          source "$HOME/.sdkman/bin/sdkman-init.sh"
-          # 安装所需版本的 Gradle
-          sdk install gradle ${{ steps.version.outputs.GRADLE_VERSION }}
-          # 将 gradle 加入 PATH（sdkman 会自动处理）
-          echo "✅ Gradle ${{ steps.version.outputs.GRADLE_VERSION }} 安装完成"
-
-      - name: Build with gradlew (if wrapper available)
-        if: env.DOWNLOAD_FAILED != 'true'
+      - name: Create init script to allow project repositories
         run: |
           cd "$GRADLEW_DIR"
-          ./gradlew assembleDebug
+          cat > init.gradle << 'EOF'
+beforeSettings { settings ->
+    settings.dependencyResolutionManagement.repositoriesMode = RepositoriesMode.PREFER_PROJECT
+}
+EOF
+          echo "✅ init.gradle 已创建"
 
-      - name: Build with installed Gradle (fallback)
-        if: env.DOWNLOAD_FAILED == 'true'
+      - name: Build with Gradle Wrapper (if restored)
+        if: steps.restore.outputs.WRAPPER_OK == 'true'
         run: |
           cd "$GRADLEW_DIR"
-          source "$HOME/.sdkman/bin/sdkman-init.sh"
-          gradle assembleDebug
+          chmod +x gradlew
+          ./gradlew -I init.gradle assembleDebug
+
+      - name: Download and use standalone Gradle (if wrapper failed)
+        if: steps.restore.outputs.WRAPPER_OK != 'true'
+        run: |
+          cd "$GRADLEW_DIR"
+          VERSION="${{ steps.version.outputs.GRADLE_VERSION }}"
+          echo "🔧 下载 Gradle $VERSION 发行版..."
+          wget -q "https://services.gradle.org/distributions/gradle-${VERSION}-bin.zip"
+          unzip -q gradle-${VERSION}-bin.zip
+          GRADLE_HOME="$(pwd)/gradle-${VERSION}"
+          echo "✅ Gradle $VERSION 解压完成，开始构建..."
+          $GRADLE_HOME/bin/gradle -I init.gradle assembleDebug
 
       - name: Upload APK to Release
         uses: softprops/action-gh-release@v2
