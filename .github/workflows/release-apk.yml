@@ -38,10 +38,30 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # 修复行尾并赋予执行权限（合并为一个步骤）
-      - name: Prepare gradlew (fix line endings & permissions)
+      # 调试和修复 gradlew 行尾与权限
+      - name: Prepare gradlew (debug & fix)
         run: |
+          echo "=== 修复前检查 ==="
+          file gradlew
+          echo "--- 前两行原始内容（含不可见字符）---"
+          head -n 2 gradlew | cat -A
+          echo "--- 文件权限 ---"
+          ls -l gradlew
+
+          echo "=== 开始修复 ==="
+          # 方法1: 使用 sed 转换 CRLF -> LF
           sed -i 's/\r$//' gradlew
+          # 方法2: 如果 sed 无效，可以尝试 dos2unix（需安装）
+          # sudo apt-get update && sudo apt-get install -y dos2unix && dos2unix gradlew
+
+          echo "=== 修复后检查 ==="
+          file gradlew
+          echo "--- 前两行修复后内容 ---"
+          head -n 2 gradlew | cat -A
+          echo "--- 文件权限 ---"
+          ls -l gradlew
+
+          # 确保可执行
           chmod +x gradlew
 
       - name: Build APK
